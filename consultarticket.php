@@ -9,6 +9,7 @@ ini_set('log_errors', 1);
 ini_set('error_log', '/tmp/php-error.log');
 
 session_start();
+$_SESSION['debug_mode'] = true;
 
 // Define a duração da sessão (300 segundos)
 $cookieLifetime = 300;
@@ -28,8 +29,8 @@ if (!isset($_SESSION['authenticated'])) {
 
 // Configurações da API do GLPI
 $glpi_url = 'http://endereco-do-seu-glpi/apirest.php';
-$app_token = 'seu-token-aplicacao';
-$user_token = 'seu-token-usuario';
+$app_token = 'token do glpi';
+$user_token = 'token de usuario do glpi';
 
 /**
  * Função para iniciar sessão na API do GLPI
@@ -104,7 +105,11 @@ function obterCamposPersonalizados($glpi_url, $app_token, $session_token, $ticke
  */
 function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/ITILFollowup?expand_dropdowns=true&get_hateoas=true");
+    
+    // URL modificada para expandir os dados dos usuários
+    $url = "$glpi_url/Ticket/$ticket_id/ITILFollowup?expand_dropdowns=true";
+    
+    curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         "Content-Type: application/json",
         "App-Token: $app_token",
@@ -115,7 +120,20 @@ function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
     $response = curl_exec($ch);
     curl_close($ch);
     
-    return json_decode($response, true);
+    $followUps = json_decode($response, true);
+    
+    if (empty($followUps) || !is_array($followUps)) {
+        return [];
+    }
+    
+    // Para cada followup, vamos buscar o nome do usuário diretamente
+    foreach ($followUps as &$followUp) {
+        if (!empty($followUp['users_id'])) {
+            $followUp['users_id_editor_name'] = $followUp['users_id'];
+        }
+    }
+    
+    return $followUps;
 }
 
 // Inicialização de variáveis
@@ -286,8 +304,8 @@ function limparConteudoHTML($content) {
         </div>
 
         <?php if ($errorMessage): ?>
-    <?php echo $errorMessage; ?>
-<?php endif; ?>
+            <?php echo $errorMessage; ?>
+        <?php endif; ?>
 
         <?php if ($ticketDetails && isset($ticketDetails['id'])): ?>
             <div class="card ticket-card">
@@ -327,7 +345,6 @@ function limparConteudoHTML($content) {
                             <div class="ticket-content">
                                 <?php 
                                 $content = $ticketDetails['content'];
-                                // Remove os caracteres de escape HTML mantendo a formatação
                                 $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
                                 echo $content;
                                 ?>
@@ -340,34 +357,35 @@ function limparConteudoHTML($content) {
                             <h4 class="mb-0">Acompanhamentos</h4>
                         </div>
                         <?php foreach ($followUps as $followUp): ?>
-                        <div class="followup-card">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <div>
-                                    <span class="text-primary font-weight-bold">
-                                        <?php 
-                                        echo htmlspecialchars($followUp['users_id_editor_name'] ?? 'Técnico Comentou');
-                                        ?>
-                                    </span>
+                            <div class="followup-card">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <div>
+                                        <span class="text-primary font-weight-bold">
+                                            <?php 
+                                            if (!empty($followUp['users_id'])) {
+                                                echo htmlspecialchars($followUp['users_id']);
+                                            } else {
+                                                echo htmlspecialchars('Usuário');
+                                            }
+                                            ?>
+                                        </span>
+                                    </div>
+                                    <div class="text-muted small">
+                                        <?php echo date('d/m/Y H:i:s', strtotime($followUp['date_creation'])); ?>
+                                    </div>
                                 </div>
-                                <div class="text-muted small">
-                                    <?php echo date('d/m/Y H:i:s', strtotime($followUp['date_creation'])); ?>
+                                <div class="followup-content">
+                                    <?php 
+                                    if (isset($followUp['content'])) {
+                                        $content = $followUp['content'];
+                                        $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                        $content = preg_replace('/<\/?p>/', '', $content);
+                                        echo $content;
+                                    }
+                                    ?>
                                 </div>
                             </div>
-                            <div class="followup-content">
-                                <?php 
-                                if (isset($followUp['content'])) {
-                                    $content = $followUp['content'];
-                                    // Decodifica o HTML mantendo a formatação
-                                    $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                                    // Remove as tags específicas mantendo o resto da formatação HTML
-                                    $content = preg_replace('/<\/?p>/', '', $content);
-                                    // Exibe o conteúdo preservando a formatação HTML
-                                    echo $content;
-                                }
-                                ?>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
+                        <?php endforeach; ?>
                     <?php else: ?>
                         <div class="alert alert-info text-center mt-4">
                             <i class="fas fa-info-circle"></i> Nenhum acompanhamento encontrado para este chamado.
