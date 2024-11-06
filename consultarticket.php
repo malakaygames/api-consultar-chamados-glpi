@@ -1,37 +1,4 @@
 <?php
-// Ativar a exibição de erros para depuração
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-
-// Log de erros em um arquivo
-ini_set('log_errors', 1);
-ini_set('error_log', '/tmp/php-error.log');
-
-session_start();
-$_SESSION['debug_mode'] = true;
-
-// Define a duração da sessão (300 segundos)
-$cookieLifetime = 300;
-
-// Verifica se a sessão já foi iniciada e se a expiração ocorreu
-if (isset($_SESSION['LAST_ACTIVITY']) && (time() - $_SESSION['LAST_ACTIVITY']) > $cookieLifetime) {
-    session_unset();
-    session_destroy();
-}
-$_SESSION['LAST_ACTIVITY'] = time();
-
-// Verificação de autenticação
-if (!isset($_SESSION['authenticated'])) {
-    header('Location: /index.php');
-    exit();
-}
-
-// Configurações da API do GLPI
-$glpi_url = 'http://endereco-do-seu-glpi/apirest.php';
-$app_token = 'token do glpi';
-$user_token = 'token de usuario do glpi';
-
 /**
  * Função para iniciar sessão na API do GLPI
  */
@@ -105,8 +72,6 @@ function obterCamposPersonalizados($glpi_url, $app_token, $session_token, $ticke
  */
 function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
     $ch = curl_init();
-    
-    // URL modificada para expandir os dados dos usuários
     $url = "$glpi_url/Ticket/$ticket_id/ITILFollowup?expand_dropdowns=true";
     
     curl_setopt($ch, CURLOPT_URL, $url);
@@ -126,7 +91,6 @@ function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
         return [];
     }
     
-    // Para cada followup, vamos buscar o nome do usuário diretamente
     foreach ($followUps as &$followUp) {
         if (!empty($followUp['users_id'])) {
             $followUp['users_id_editor_name'] = $followUp['users_id'];
@@ -136,10 +100,118 @@ function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
     return $followUps;
 }
 
+/**
+ * Função para obter validações do ticket
+ */
+function obterValidacoesTicket($glpi_url, $app_token, $session_token, $ticket_id) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id?expand_dropdowns=true");
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200) {
+        $ticketData = json_decode($response, true);
+        
+        // Verifica se existe global_validation no ticket
+        if (!isset($ticketData['global_validation']) || $ticketData['global_validation'] === null || $ticketData['global_validation'] === 0) {
+            return null; // Retorna null quando não há pedido de aprovação
+        }
+
+        // Busca as validações do ticket
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/TicketValidation?expand_dropdowns=true");
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Content-Type: application/json",
+            "App-Token: $app_token",
+            "Session-Token: $session_token"
+        ]);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        
+        $validationsResponse = curl_exec($ch);
+        curl_close($ch);
+        
+        $validationsData = json_decode($validationsResponse, true);
+
+        if ($_SESSION['debug_mode']) {
+            error_log("Ticket Data: " . print_r($ticketData, true));
+            error_log("Validations Data: " . print_r($validationsData, true));
+        }
+        
+        return [
+            'validation_status' => $ticketData['global_validation'],
+            'validations' => is_array($validationsData) ? $validationsData : []
+        ];
+    }
+    
+    return null;
+}
+?>
+
+<?php
+// Ativar a exibição de erros para depuração
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+
+// Log de erros em um arquivo
+ini_set('log_errors', 1);
+ini_set('error_log', '/tmp/php-error.log');
+
+session_start();
+$_SESSION['debug_mode'] = true;
+
+// Define a duração da sessão (300 segundos)
+$cookieLifetime = 300;
+
+// Verifica se a sessão já foi iniciada e se a expiração ocorreu
+if (isset($_SESSION['LAST_ACTIVITY']) && (time() - $_SESSION['LAST_ACTIVITY']) > $cookieLifetime) {
+    session_unset();
+    session_destroy();
+}
+$_SESSION['LAST_ACTIVITY'] = time();
+
+// Verificação de autenticação
+if (!isset($_SESSION['authenticated'])) {
+    header('Location: /index.php');
+    exit();
+}
+
+// Configurações da API do GLPI
+$glpi_url = 'http://endereco do seu glpi/apirest.php';
+$app_token = 'token do seu glpi';
+$user_token = 'token do usuario da api';
+
+// Mapeamento de status do ticket
+$statusMapping = [
+    1 => ['label' => 'Novo', 'class' => 'success'],
+    2 => ['label' => 'Em atendimento', 'class' => 'warning'],
+    3 => ['label' => 'Em atendimento - Planejado', 'class' => 'warning'],
+    4 => ['label' => 'Pendente', 'class' => 'secondary'],
+    5 => ['label' => 'Solucionado', 'class' => 'dark'],
+    6 => ['label' => 'Cancelado', 'class' => 'danger']
+];
+
+// Mapeamento dos status de validação
+$validationStatusMapping = [
+    'NONE' => ['id' => 0, 'label' => 'Recusado', 'class' => 'danger'],
+    'WAITING' => ['id' => 1, 'label' => 'Não requer aprovação', 'class' => 'secondary'],
+    'ACCEPTED' => ['id' => 2, 'label' => 'Esperando por validação', 'class' => 'warning'],
+    'REFUSED' => ['id' => 3, 'label' => 'Aprovado', 'class' => 'success']
+];
+
 // Inicialização de variáveis
 $ticketDetails = null;
 $customFields = null;
 $followUps = [];
+$validacoes = null;
 $errorMessage = '';
 $currentTicketId = '';
 
@@ -152,6 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['ticket_id'])) {
         $ticketDetails = obterChamadoGLPI($glpi_url, $app_token, $session_token, $currentTicketId);
         $customFields = obterCamposPersonalizados($glpi_url, $app_token, $session_token, $currentTicketId);
         $followUps = obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $currentTicketId);
+        $validacoes = obterValidacoesTicket($glpi_url, $app_token, $session_token, $currentTicketId);
 
         if (!isset($ticketDetails['id'])) {
             $errorMessage = '<div class="alert alert-danger" role="alert">
@@ -171,19 +244,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['ticket_id'])) {
     }
 }
 
-// Mapeamento de status
-$statusMapping = [
-    1 => ['label' => 'Novo', 'class' => 'success'],
-    2 => ['label' => 'Em progresso', 'class' => 'warning'],
-    3 => ['label' => 'Resolvido', 'class' => 'info'],
-    4 => ['label' => 'Pausado', 'class' => 'secondary'],
-    5 => ['label' => 'Aguardando', 'class' => 'danger'],
-    6 => ['label' => 'Cancelado', 'class' => 'dark']
-];
-
 function limparConteudoHTML($content) {
     return strip_tags($content);
 }
+?>
+
+<?php
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -211,8 +277,8 @@ function limparConteudoHTML($content) {
             background-color: #007bff;
             color: white;
             padding: 15px;
-            border-top-left-radius: 10px;
-            border-top-right-radius: 10px;
+            border-radius: 4px;
+            margin-bottom: 1rem;
         }
         .followup-card {
             background-color: #f8f9fa;
@@ -282,6 +348,31 @@ function limparConteudoHTML($content) {
         .ticket-content p, .followup-content p {
             margin-bottom: 1rem;
         }
+        .validation-detail {
+            border-left: 3px solid #007bff;
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        .ticket-header .badge {
+            background-color: var(--badge-color, #6c757d);
+            font-size: 0.9em;
+            padding: 8px 12px;
+            border-radius: 4px;
+        }
+        .ticket-header .badge-success {
+            --badge-color: #28a745;
+        }
+        .ticket-header .badge-warning {
+            --badge-color: #ffc107;
+            color: #000;
+        }
+        .ticket-header .badge-danger {
+            --badge-color: #dc3545;
+        }
+        .ticket-header .badge-secondary {
+            --badge-color: #6c757d;
+        }
     </style>
 </head>
 <body>
@@ -306,6 +397,7 @@ function limparConteudoHTML($content) {
         <?php if ($errorMessage): ?>
             <?php echo $errorMessage; ?>
         <?php endif; ?>
+
 
         <?php if ($ticketDetails && isset($ticketDetails['id'])): ?>
             <div class="card ticket-card">
@@ -351,6 +443,24 @@ function limparConteudoHTML($content) {
                             </div>
                         </div>
                     </div>
+
+                    <?php if ($validacoes !== null): ?>
+                        <div class="ticket-header d-flex justify-content-between align-items-center mt-4">
+                            <h4 class="mb-0">Status de Aprovação do Ticket</h4>
+                            <?php
+                            $validationStatus = $validacoes['validation_status'];
+                            $statusInfo = array_values(array_filter($validationStatusMapping, function($status) use ($validationStatus) {
+                                return $status['id'] === $validationStatus;
+                            }))[0] ?? $validationStatusMapping['NONE'];
+                            ?>
+                            <span class="badge badge-<?php echo $statusInfo['class']; ?>">
+                                <?php echo $statusInfo['label']; ?>
+                            </span>
+                        </div>
+                       
+
+
+                    <?php endif; ?>
 
                     <?php if (!empty($followUps)): ?>
                         <div class="ticket-header d-flex justify-content-between align-items-center mt-4">
