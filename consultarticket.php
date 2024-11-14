@@ -1,202 +1,4 @@
 <?php
-/**
- * Função para iniciar sessão na API do GLPI
- */
-function iniciarSessaoGLPI($glpi_url, $app_token, $user_token) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/initSession");
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Authorization: user_token $user_token",
-    ]);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    $responseData = json_decode($response, true);
-    return isset($responseData['session_token']) ? $responseData['session_token'] : null;
-}
-
-/**
- * Função para obter detalhes do chamado
- */
-function obterChamadoGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id?expand_dropdowns=true");
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Session-Token: $session_token"  // Usar session_token em vez de Authorization
-    ]);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    return json_decode($response, true);
-}
-
-/**
- * Função para obter campos personalizados do ticket
- */
-function obterCamposPersonalizados($glpi_url, $app_token, $session_token, $ticket_id) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/PluginFieldsTicketcampo?searchText[items_id]=$ticket_id");
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Session-Token: $session_token"
-    ]);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    $data = json_decode($response, true);
-    if (isset($data[0])) {
-        return [
-            'telefone' => $data[0]['telefonefield'] ?? '',
-            'setor' => $data[0]['setorfield'] ?? '',
-            'requerente' => $data[0]['requerentefield'] ?? '',
-            'unidade' => $data[0]['unidadefield'] ?? ''
-        ];
-    }
-    return null;
-}
-
-/**
- * Função para obter acompanhamentos do chamado
- */
-function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
-    $ch = curl_init();
-    $url = "$glpi_url/Ticket/$ticket_id/ITILFollowup?expand_dropdowns=true";
-    
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Session-Token: $session_token"
-    ]);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    
-    $response = curl_exec($ch);
-    curl_close($ch);
-    
-    $followUps = json_decode($response, true);
-    
-    if (empty($followUps) || !is_array($followUps)) {
-        return [];
-    }
-    
-    foreach ($followUps as &$followUp) {
-        if (!empty($followUp['users_id'])) {
-            $followUp['users_id_editor_name'] = $followUp['users_id'];
-        }
-    }
-    
-    // Inverte a ordem dos comentários (mais recentes primeiro)
-    return array_reverse($followUps);
-}
-
-/**
- * Função para obter validações do ticket
- */
-function obterValidacoesTicket($glpi_url, $app_token, $session_token, $ticket_id) {
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id?expand_dropdowns=true");
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Session-Token: $session_token"
-    ]);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    if ($httpCode === 200) {
-        $ticketData = json_decode($response, true);
-        
-        if (!isset($ticketData['global_validation']) || $ticketData['global_validation'] === null || $ticketData['global_validation'] === 0) {
-            return null;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/TicketValidation?expand_dropdowns=true");
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            "Content-Type: application/json",
-            "App-Token: $app_token",
-            "Session-Token: $session_token"
-        ]);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        
-        $validationsResponse = curl_exec($ch);
-        curl_close($ch);
-        
-        $validationsData = json_decode($validationsResponse, true);
-
-        if ($_SESSION['debug_mode']) {
-            error_log("Ticket Data: " . print_r($ticketData, true));
-            error_log("Validations Data: " . print_r($validationsData, true));
-        }
-        
-        return [
-            'validation_status' => $ticketData['global_validation'],
-            'validations' => is_array($validationsData) ? $validationsData : []
-        ];
-    }
-    
-    return null;
-}
-
-/**
- * Função para adicionar resposta ao ticket
- */
-function adicionarRespostaTicket($glpi_url, $app_token, $session_token, $ticket_id, $content, $nome_usuario, $setor, $contato) {
-    // Prepara o conteúdo da resposta com as informações do usuário de forma organizada
-    $fullContent = "O Usuário <b>$nome_usuario</b> do setor $setor com o contato $contato, comentou via api de consulta:\n";
-    $fullContent .= "<b>$content</b>";
-    
-    $data = [
-        'input' => [
-            'tickets_id' => intval($ticket_id),
-            'content' => $fullContent
-        ]
-    ];
-    
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/TicketFollowup");
-    curl_setopt($ch, CURLOPT_POST, 1);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_HTTPHEADER, [
-        "Content-Type: application/json",
-        "App-Token: $app_token",
-        "Session-Token: $session_token"
-    ]);
-    
-    $response = curl_exec($ch);
-    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curl_error = curl_error($ch);
-    
-    curl_close($ch);
-    
-    if ($http_code !== 201 && $http_code !== 200) {
-        return [
-            'error' => true,
-            'message' => "Erro ao adicionar resposta (HTTP $http_code)",
-            'details' => $curl_error,
-            'response' => $response
-        ];
-    }
-    
-    return ['error' => false, 'response' => json_decode($response, true)];
-}
-
 // Configurações iniciais e sessão
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
@@ -222,9 +24,8 @@ if (!isset($_SESSION['authenticated'])) {
 
 // Configurações da API do GLPI
 $glpi_url = 'http://endereco do seu glpi/apirest.php';
-$app_token = 'o token gerado pelo glpi';
-$user_token = 'o token de usuario com permissao para api';
-
+$app_token = 'token da api gerada no glpi';
+$user_token = 'token gerado por um usuario com permissao';
 
 // Mapeamentos de status
 $statusMapping = [
@@ -342,11 +143,206 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     }
 }
 
+/**
+ * Função para iniciar sessão na API do GLPI
+ */
+function iniciarSessaoGLPI($glpi_url, $app_token, $user_token) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/initSession");
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Authorization: user_token $user_token",
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    $responseData = json_decode($response, true);
+    return isset($responseData['session_token']) ? $responseData['session_token'] : null;
+}
+
+/**
+ * Função para obter detalhes do chamado
+ */
+function obterChamadoGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id?expand_dropdowns=true");
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    return json_decode($response, true);
+}
+
+/**
+ * Função para obter campos personalizados do ticket
+ */
+function obterCamposPersonalizados($glpi_url, $app_token, $session_token, $ticket_id) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/PluginFieldsTicketcampo?searchText[items_id]=$ticket_id");
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    $data = json_decode($response, true);
+    if (isset($data[0])) {
+        return [
+            'telefone' => $data[0]['telefonefield'] ?? '',
+            'setor' => $data[0]['setorfield'] ?? '',
+            'requerente' => $data[0]['requerentefield'] ?? '',
+            'unidade' => $data[0]['unidadefield'] ?? ''
+        ];
+    }
+    return null;
+}
+
+/**
+ * Função para obter acompanhamentos do chamado
+ */
+function obterFollowUpsGLPI($glpi_url, $app_token, $session_token, $ticket_id) {
+    $ch = curl_init();
+    $url = "$glpi_url/Ticket/$ticket_id/ITILFollowup?expand_dropdowns=true";
+    
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    curl_close($ch);
+    
+    $followUps = json_decode($response, true);
+    
+    if (empty($followUps) || !is_array($followUps)) {
+        return [];
+    }
+    
+    foreach ($followUps as &$followUp) {
+        if (!empty($followUp['users_id'])) {
+            $followUp['users_id_editor_name'] = $followUp['users_id'];
+        }
+    }
+    
+    return array_reverse($followUps);
+}
+
+/**
+ * Função para obter validações do ticket
+ */
+function obterValidacoesTicket($glpi_url, $app_token, $session_token, $ticket_id) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id?expand_dropdowns=true");
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200) {
+        $ticketData = json_decode($response, true);
+        
+        if (!isset($ticketData['global_validation']) || $ticketData['global_validation'] === null) {
+            return null;
+        }
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/TicketValidation?expand_dropdowns=true");
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            "Content-Type: application/json",
+            "App-Token: $app_token",
+            "Session-Token: $session_token"
+        ]);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        
+        $validationsResponse = curl_exec($ch);
+        curl_close($ch);
+        
+        $validationsData = json_decode($validationsResponse, true);
+
+        if ($_SESSION['debug_mode']) {
+            error_log("Ticket Data: " . print_r($ticketData, true));
+            error_log("Validations Data: " . print_r($validationsData, true));
+        }
+        
+        return [
+            'validation_status' => $ticketData['global_validation'],
+            'validations' => is_array($validationsData) ? $validationsData : []
+        ];
+    }
+    
+    return null;
+}
+
+/**
+ * Função para adicionar resposta ao ticket
+ */
+function adicionarRespostaTicket($glpi_url, $app_token, $session_token, $ticket_id, $content, $nome_usuario, $setor, $contato) {
+    $fullContent = "O Usuário <b>$nome_usuario</b> do setor $setor com o contato $contato, comentou via api de consulta:\n";
+    $fullContent .= "<b>$content</b>";
+    
+    $data = [
+        'input' => [
+            'tickets_id' => intval($ticket_id),
+            'content' => $fullContent
+        ]
+    ];
+    
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, "$glpi_url/Ticket/$ticket_id/TicketFollowup");
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        "Content-Type: application/json",
+        "App-Token: $app_token",
+        "Session-Token: $session_token"
+    ]);
+    
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curl_error = curl_error($ch);
+    
+    curl_close($ch);
+    
+    if ($http_code !== 201 && $http_code !== 200) {
+        return [
+            'error' => true,
+            'message' => "Erro ao adicionar resposta (HTTP $http_code)",
+            'details' => $curl_error,
+            'response' => $response
+        ];
+    }
+    
+    return ['error' => false, 'response' => json_decode($response, true)];
+}
+
 function limparConteudoHTML($content) {
     return strip_tags($content);
 }
-?>
-
+?> <!-- ADICIONAR ESTE FECHAMENTO -->
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -488,7 +484,7 @@ function limparConteudoHTML($content) {
 <body>
     <div class="container container-custom">
         <div class="text-center mb-4">
-            <img src="" alt="Logo" class="img-fluid mb-4" style="max-width: 300px;">
+            <img src="logo de sua empresa" alt="Logo" class="img-fluid mb-4" style="max-width: 300px;">
             
             <form method="POST" class="form-row justify-content-center">
                 <div class="col-auto">
@@ -523,22 +519,23 @@ function limparConteudoHTML($content) {
                             <p><strong>Solicitante:</strong> <?php echo htmlspecialchars($customFields['requerente'] ?? 'Não informado'); ?></p>
                             <p><strong>Data de Abertura:</strong> <?php echo date('d/m/Y H:i', strtotime($ticketDetails['date'])); ?></p>
                             <?php if ($customFields): ?>
-    <div class="custom-fields mt-3">
-        <?php if (!empty($customFields['telefone'])): ?>
-            <p><strong>Telefone:</strong> 
-                <a href="tel:<?php echo htmlspecialchars(preg_replace('/[^0-9]/', '', $customFields['telefone'])); ?>">
-                    <?php echo htmlspecialchars($customFields['telefone']); ?>
-                </a>
-            </p>
-        <?php endif; ?>
-        <?php if (!empty($customFields['setor'])): ?>
-            <p><strong>Setor:</strong> <?php echo htmlspecialchars($customFields['setor']); ?></p>
-        <?php endif; ?>
-        <?php if (!empty($customFields['unidade'])): ?>
-            <p><strong>Unidade:</strong> <?php echo htmlspecialchars($customFields['unidade']); ?></p>
-        <?php endif; ?>
-    </div>
-<?php endif; ?>
+                                <div class="custom-fields mt-3">
+                                    <?php if (!empty($customFields['telefone'])): ?>
+                                        <p><strong>Telefone:</strong> 
+                                            <a href="tel:<?php echo htmlspecialchars(preg_replace('/[^0-9]/', '', $customFields['telefone'])); ?>">
+                                                <?php echo htmlspecialchars($customFields['telefone']); ?>
+                                            </a>
+                                        </p>
+                                    <?php endif; ?>
+                                    <?php if (!empty($customFields['setor'])): ?>
+                                        <p><strong>Setor:</strong> <?php echo htmlspecialchars($customFields['setor']); ?></p>
+                                    <?php endif; ?>
+                                    <?php if (!empty($customFields['unidade'])): ?>
+                                        <p><strong>Unidade:</strong> <?php echo htmlspecialchars($customFields['unidade']); ?></p>
+                                    <?php endif; ?>
+                                </div>
+                                <br>
+                            <?php endif; ?>
                         </div>
                         <div class="col-md-6">
                             <h6 class="text-muted">Descrição</h6>
@@ -551,153 +548,168 @@ function limparConteudoHTML($content) {
                             </div>
                         </div>
                     </div>
-                    <br>
+
                     <?php if ($validacoes !== null): ?>
-                    <div class="card mb-3">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h4 class="mb-0">Status de Aprovação do Ticket</h4>
-                            <div>
-                                <?php
-                                $validationStatus = $validacoes['validation_status'];
-                                $statusInfo = array_values(array_filter($validationStatusMapping, function($status) use ($validationStatus) {
-                                    return $status['id'] === $validationStatus;
-                                }))[0] ?? $validationStatusMapping['NONE'];
-                                ?>
-                                <span class="badge badge-<?php echo $statusInfo['class']; ?>">
-                                    <?php echo $statusInfo['label']; ?>
-                                </span>
-                                <button class="btn btn-link btn-sm ml-2 collapse-btn" type="button" data-toggle="collapse" data-target="#statusAprovacao" aria-expanded="true">
-                                    <i class="fas fa-chevron-up"></i>
-                                </button>
+                        <?php
+                        $validationStatus = $validacoes['validation_status'];
+                        $statusInfo = array_values(array_filter($validationStatusMapping, function($status) use ($validationStatus) {
+                            return $status['id'] === $validationStatus;
+                        }))[0] ?? $validationStatusMapping['NONE'];
+                        
+                        if ($validationStatus === 1): ?>
+                            <div class="alert alert-success text-center mt-4">
+                                <i class="fas fa-info-circle"></i> <?php echo $statusInfo['label']; ?>
                             </div>
-                        </div>
-                        <div class="collapse" id="statusAprovacao">
-                            <div class="card-body">
-                                <!-- Conteúdo do status de aprovação -->
+                        <?php else: ?>
+                            <div class="card mb-3">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h4 class="mb-0">Status de Aprovação do Ticket</h4>
+                                    <div>
+                                        <span class="badge badge-<?php echo $statusInfo['class']; ?>">
+                                            <?php echo $statusInfo['label']; ?>
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="collapse" id="statusAprovacao">
+                                    <div class="card-body">
+                                        <?php if (!empty($validacoes['validations'])): ?>
+                                            <?php foreach ($validacoes['validations'] as $validacao): ?>
+                                                <div class="validation-detail mb-2">
+                                                    <p class="mb-1"><strong>Validador:</strong> <?php echo htmlspecialchars($validacao['users_id_validate'] ?? 'Não especificado'); ?></p>
+                                                    <p class="mb-1"><strong>Data:</strong> <?php echo isset($validacao['submission_date']) ? date('d/m/Y H:i', strtotime($validacao['submission_date'])) : 'Não especificada'; ?></p>
+                                                    <?php if (!empty($validacao['comment_validation'])): ?>
+                                                        <p class="mb-0"><strong>Comentário:</strong> <?php echo htmlspecialchars($validacao['comment_validation']); ?></p>
+                                                    <?php endif; ?>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php else: ?>
+                                            <p class="text-muted mb-0">Nenhum detalhe de validação disponível.</p>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    </div>
+                        <?php endif; ?>
                     <?php endif; ?>
 
                     <!-- Formulário de Resposta -->
-<div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <h4 class="mb-0">Adicionar Acompanhamentos</h4>
-        <button class="btn btn-link btn-sm collapse-btn" type="button" data-toggle="collapse" data-target="#formResposta" aria-expanded="true">
-            <i class="fas fa-chevron-up"></i>
-        </button>
-    </div>
-    <div class="collapse" id="formResposta">
-        <div class="card-body">
-            <form method="POST">
-                <input type="hidden" name="ticket_id" value="<?php echo htmlspecialchars($ticketDetails['id']); ?>">
-                <div class="row">
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="nome_usuario">Nome e Sobrenome:</label>
-                            <input type="text" 
-                                   name="nome_usuario" 
-                                   id="nome_usuario" 
-                                   class="form-control" 
-                                   maxlength="20" 
-                                   pattern="^[A-Za-zÀ-ÖØ-öø-ÿ]+\s+[A-Za-zÀ-ÖØ-öø-ÿ]+$"
-                                   title="Digite seu nome e sobrenome (ex: João Silva)"
-                                   placeholder="Ex: João Silva"
-                                   required>
+                    <div class="card mb-3">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <h4 class="mb-0">Adicionar Acompanhamentos</h4>
+                            <button class="btn btn-link btn-sm collapse-btn" type="button" data-toggle="collapse" data-target="#formResposta" aria-expanded="true">
+                                <i class="fas fa-chevron-up"></i>
+                            </button>
+                        </div>
+                        <div class="collapse" id="formResposta">
+                            <div class="card-body">
+                                <form method="POST">
+                                    <input type="hidden" name="ticket_id" value="<?php echo htmlspecialchars($ticketDetails['id']); ?>">
+                                    <div class="row">
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="nome_usuario">Nome e Sobrenome:</label>
+                                                <input type="text" 
+                                                       name="nome_usuario" 
+                                                       id="nome_usuario" 
+                                                       class="form-control" 
+                                                       maxlength="20" 
+                                                       pattern="^[A-Za-zÀ-ÖØ-öø-ÿ]+\s+[A-Za-zÀ-ÖØ-öø-ÿ]+$"
+                                                       title="Digite seu nome e sobrenome (ex: João Silva)"
+                                                       placeholder="Ex: João Silva"
+                                                       required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="setor">Setor:</label>
+                                                <input type="text" 
+                                                       name="setor" 
+                                                       id="setor" 
+                                                       class="form-control" 
+                                                       maxlength="50" 
+                                                       placeholder="Ex: TI"
+                                                       required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4">
+                                            <div class="form-group">
+                                                <label for="contato">Contato:</label>
+                                                <input type="text" 
+                                                       name="contato" 
+                                                       id="contato" 
+                                                       class="form-control" 
+                                                       maxlength="15" 
+                                                       pattern="[\d\s()-]+"
+                                                       title="Digite apenas números, espaços, parênteses e hífen"
+                                                       placeholder="Ex: (11) 98765-4321"
+                                                       required>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="form-group mt-3">
+                                        <label for="response">Sua resposta:</label>
+                                        <textarea name="response" id="response" class="form-control" rows="4" required></textarea>
+                                    </div>
+                                    <button type="submit" name="respond" class="btn btn-primary">
+                                        <i class="fas fa-reply"></i> Enviar Resposta
+                                    </button>
+                                </form>
+                            </div>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="setor">Setor:</label>
-                            <input type="text" 
-                                   name="setor" 
-                                   id="setor" 
-                                   class="form-control" 
-                                   maxlength="50" 
-                                   placeholder="Ex: TI"
-                                   required>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="form-group">
-                            <label for="contato">Contato:</label>
-                            <input type="text" 
-                                   name="contato" 
-                                   id="contato" 
-                                   class="form-control" 
-                                   maxlength="15" 
-                                   pattern="[\d\s()-]+"
-                                   title="Digite apenas números, espaços, parênteses e hífen"
-                                   placeholder="Ex: (11) 98765-4321"
-                                   required>
-                        </div>
-                    </div>
-                </div>
-                <div class="form-group mt-3">
-                    <label for="response">Sua resposta:</label>
-                    <textarea name="response" id="response" class="form-control" rows="4" required></textarea>
-                </div>
-                <button type="submit" name="respond" class="btn btn-primary">
-                    <i class="fas fa-reply"></i> Enviar Resposta
-                </button>
-            </form>
-        </div>
-    </div>
-</div>
 
-<!-- Acompanhamentos -->
-<?php if (!empty($followUps)): ?>
-    <div class="card mb-3">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h4 class="mb-0">Listar Acompanhamentos</h4>
-            <button class="btn btn-link btn-sm collapse-btn" type="button" data-toggle="collapse" data-target="#acompanhamentos" aria-expanded="true">
-                <i class="fas fa-chevron-up"></i>
-            </button>
-        </div>
-        <div class="collapse" id="acompanhamentos">
-            <div class="card-body p-0">
-                <?php foreach ($followUps as $followUp): ?>
-                    <div class="followup-card">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <div>
-                                <span class="text-primary font-weight-bold">
-                                    <?php 
-                                    if (!empty($followUp['users_id'])) {
-                                        echo htmlspecialchars($followUp['users_id']);
-                                    } else {
-                                        echo htmlspecialchars('Usuário');
-                                    }
-                                    ?>
-                                </span>
+                    <!-- Acompanhamentos -->
+                    <?php if (!empty($followUps)): ?>
+                        <div class="card mb-3">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h4 class="mb-0">Listar Acompanhamentos</h4>
+                                <button class="btn btn-link btn-sm collapse-btn" type="button" data-toggle="collapse" data-target="#acompanhamentos" aria-expanded="true">
+                                    <i class="fas fa-chevron-up"></i>
+                                </button>
                             </div>
-                            <div class="text-muted small">
-                                <?php echo date('d/m/Y H:i:s', strtotime($followUp['date_creation'])); ?>
+                            <div class="collapse" id="acompanhamentos">
+                                <div class="card-body p-0">
+                                    <?php foreach ($followUps as $followUp): ?>
+                                        <div class="followup-card">
+                                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                                <div>
+                                                    <span class="text-primary font-weight-bold">
+                                                        <?php 
+                                                        if (!empty($followUp['users_id'])) {
+                                                            echo htmlspecialchars($followUp['users_id']);
+                                                        } else {
+                                                            echo htmlspecialchars('Usuário');
+                                                        }
+                                                        ?>
+                                                    </span>
+                                                </div>
+                                                <div class="text-muted small">
+                                                    <?php echo date('d/m/Y H:i:s', strtotime($followUp['date_creation'])); ?>
+                                                </div>
+                                            </div>
+                                            <div class="followup-content" style="text-indent: 0; margin-left: 0;">
+                                                <?php 
+                                                if (isset($followUp['content'])) {
+                                                    $content = $followUp['content'];
+                                                    $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                                                    $content = preg_replace('/<\/?p>/', '', $content);
+                                                    $content = ltrim($content);
+                                                    $content = trim($content);
+                                                    $content = preg_replace('/^\n+/', '', $content);
+                                                    $content = preg_replace('/^\s+/', '', $content);
+                                                    echo '<span style="display: inline-block; text-indent: 0; margin: 0; padding: 0;">' . $content . '</span>';
+                                                }
+                                                ?>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
                             </div>
                         </div>
-                        <div class="followup-content" style="text-indent: 0; margin-left: 0;">
-                            <?php 
-                            if (isset($followUp['content'])) {
-                                $content = $followUp['content'];
-                                $content = html_entity_decode($content, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-                                $content = preg_replace('/<\/?p>/', '', $content);
-                                $content = ltrim($content);
-                                $content = trim($content);
-                                $content = preg_replace('/^\n+/', '', $content);
-                                $content = preg_replace('/^\s+/', '', $content);
-                                echo '<span style="display: inline-block; text-indent: 0; margin: 0; padding: 0;">' . $content . '</span>';
-                            }
-                            ?>
+                    <?php else: ?>
+                        <div class="alert alert-info text-center mt-4">
+                            <i class="fas fa-info-circle"></i> Nenhum acompanhamento encontrado para este chamado.
                         </div>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-    </div>
-<?php else: ?>
-    <div class="alert alert-info text-center mt-4">
-        <i class="fas fa-info-circle"></i> Nenhum acompanhamento encontrado para este chamado.
-    </div>
-<?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
         <?php endif; ?>
@@ -707,16 +719,10 @@ function limparConteudoHTML($content) {
     <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.3/dist/umd/popper.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
     <script>
-document.addEventListener('DOMContentLoaded', function() {
-    // Limpar estados salvos quando pesquisar novo ticket
-    document.querySelector('form').addEventListener('submit', function() {
-        localStorage.removeItem('panelStates');
-
-        document.getElementById('nome_usuario').addEventListener('input', function(e) {
-            let value = e.target.value;
-            value = value.replace(/\s+/g, ' ');
-            value = value.trim();
-            e.target.value = value;
+    document.addEventListener('DOMContentLoaded', function() {
+        // Limpar estados salvos quando pesquisar novo ticket
+        document.querySelector('form').addEventListener('submit', function() {
+            localStorage.removeItem('panelStates');
         });
 
         // Validação do contato
@@ -774,6 +780,42 @@ document.addEventListener('DOMContentLoaded', function() {
 
         // Restaurar estados quando a página carregar
         restorePanelStates();
+
+        // Função para formatar números de telefone
+        function formatPhoneNumber(input) {
+            let value = input.value.replace(/\D/g, '');
+            if (value.length <= 11) {
+                value = value.replace(/^(\d{2})(\d)/g, '($1) $2');
+                value = value.replace(/(\d)(\d{4})$/, '$1-$2');
+            }
+            input.value = value;
+        }
+
+        // Aplicar formatação ao campo de contato
+        const contatoInput = document.getElementById('contato');
+        if (contatoInput) {
+            contatoInput.addEventListener('input', function() {
+                formatPhoneNumber(this);
+            });
+        }
+
+        // Função para confirmar envio de resposta
+        function confirmarEnvioResposta() {
+            return confirm('Confirma o envio da resposta?');
+        }
+
+        // Adicionar confirmação ao formulário de resposta
+        const formResposta = document.querySelector('form[action*="respond"]');
+        if (formResposta) {
+            formResposta.addEventListener('submit', function(e) {
+                if (!confirmarEnvioResposta()) {
+                    e.preventDefault();
+                }
+            });
+        }
+
+        // Adicionar tooltips para campos obrigatórios
+        $('[data-toggle="tooltip"]').tooltip();
     });
     </script>
 </body>
